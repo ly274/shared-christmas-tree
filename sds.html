@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shared Memory Tree</title>
+    <style>
+        /* General Styles */
+        body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Times New Roman', serif; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* UI Overlay - Minimalist */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 10; pointer-events: none;
+            display: flex; flex-direction: column; 
+            align-items: center;
+            padding-top: 40px;
+            box-sizing: border-box;
+        }
+        
+        .ui-hidden {
+            opacity: 0;
+            pointer-events: none !important;
+            transition: opacity 0.5s ease;
+        }
+
+        /* Loading & Status */
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            transition: opacity 0.8s ease-out;
+        }
+        .loader-text {
+            color: #d4af37; font-size: 14px; letter-spacing: 4px; margin-top: 20px;
+            text-transform: uppercase; font-weight: 100;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 1px solid rgba(212, 175, 55, 0.2); 
+            border-top: 1px solid #d4af37; border-radius: 50%; 
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Typography - Centerpiece */
+        h1 { 
+            color: #fceea7; font-size: 56px; margin: 0; font-weight: 400; 
+            letter-spacing: 6px; 
+            text-shadow: 0 0 50px rgba(252, 238, 167, 0.6); 
+            background: linear-gradient(to bottom, #fff, #eebb66);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            font-family: 'Cinzel', 'Times New Roman', serif;
+            opacity: 0.9;
+            transition: opacity 0.5s ease;
+        }
+        
+        /* Buttons and Controls */
+        .controls-wrapper {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            pointer-events: auto;
+            transition: opacity 0.5s ease;
+            padding: 10px 20px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            border: 1px solid rgba(212, 175, 55, 0.2);
+            backdrop-filter: blur(5px);
+        }
+
+        .upload-wrapper {
+            margin-top: 20px;
+            pointer-events: auto;
+            text-align: center;
+            transition: opacity 0.5s ease;
+        }
+        .upload-btn, .mode-btn {
+            background: rgba(20, 20, 20, 0.6); 
+            border: 1px solid rgba(212, 175, 55, 0.4); 
+            color: #d4af37; 
+            padding: 10px 20px; 
+            cursor: pointer; 
+            text-transform: uppercase; 
+            letter-spacing: 3px; 
+            font-size: 10px;
+            transition: all 0.4s;
+            display: inline-block;
+            border-radius: 4px;
+        }
+        .upload-btn:hover, .mode-btn:hover { 
+            background: #d4af37; 
+            color: #000; 
+            box-shadow: 0 0 20px rgba(212, 175, 55, 0.5);
+        }
+
+        .hint-text {
+            color: rgba(212, 175, 55, 0.7); /* Slightly brighter for better contrast */
+            font-size: 11px; /* Slightly larger */
+            margin-top: 8px;
+            letter-spacing: 1px;
+            text-transform: none; /* Keep Chinese readable */
+        }
+        #file-input { display: none; }
+        #status-message {
+            position: absolute; top: 100px; left: 50%; transform: translateX(-50%);
+            color: #ff5555; background: rgba(0,0,0,0.7); padding: 8px 15px;
+            border-radius: 5px; font-size: 12px; z-index: 50; opacity: 0;
+            transition: opacity 0.3s ease-in-out; pointer-events: none;
+        }
+    </style>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, setDoc, doc, getDocs, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Expose Firebase objects globally for the main script
+        window.firebase = { 
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, 
+            getFirestore, collection, addDoc, onSnapshot, query, setDoc, doc, getDocs, where
+        };
+        window.firebaseReady = true;
+    </script>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <div class="loader-text">Initializing Firebase & Magic</div>
+    </div>
+
+    <div id="status-message"></div>
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer">
+        <h1>Merry Christmas</h1>
+        
+        <div class="upload-wrapper">
+            <label class="upload-btn">
+                添加回忆 (Add Memories)
+                <input type="file" id="file-input" multiple accept="image/*">
+            </label>
+            <div class="hint-text" id="hint-text">
+                点击背景：解体/重组圣诞树。点击图片：聚焦查看。拖拽旋转。
+            </div>
+        </div>
+    </div>
+
+    <div class="controls-wrapper">
+        <button id="hide-ui-btn" class="mode-btn">隐藏 UI (H)</button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'; 
+
+        // --- FIREBASE GLOBALS ---
+        let db, auth, userId;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // --- 配置 (CONFIGURATION) ---
+        const CONFIG = {
+            colors: {
+                bg: 0x000000, 
+                champagneGold: 0xffd966, 
+                deepGreen: 0x03180a,      
+                accentRed: 0x990000,      
+                treeGreen: 0x013318, // 树叶深绿
+                treeBrown: 0x4a2a0a
+            },
+            particles: {
+                ornamentCount: 1000, // 装饰物数量
+                foliageCount: 6000,  // 树叶粒子数量
+                trunkParticleCount: 800, // 树干粒子数量
+                dustCount: 2000,     // 背景灰尘数量 
+                treeHeight: 24,   
+                treeRadius: 8    
+            },
+            camera: {
+                z: 50
+            }
+        };
+
+        const STATE = {
+            mode: 'TREE',
+            focusTarget: null,
+            rotation: { x: 0, y: 0 },
+            isDragging: false,
+            prevMouseX: 0,
+            prevMouseY: 0,
+            pointerDownPos: new THREE.Vector2(),
+            raycaster: new THREE.Raycaster(),
+            mouse: new THREE.Vector2(),
+            loadedPhotoIds: new Set() // Track photos already loaded from DB
+        };
+
+        let scene, camera, renderer, composer, controls;
+        let mainGroup;  
+        let clock = new THREE.Clock();
+        let particleSystem = [];  
+        let photoMeshGroup = new THREE.Group();
+        let treeGroup; 
+        let caneTexture; 
+
+        // DOM 元素引用
+        const canvasContainer = document.getElementById('canvas-container');
+        const hintTextElement = document.getElementById('hint-text');
+        const statusMessageElement = document.getElementById('status-message');
+
+
+        /**
+         * 显示状态/错误信息
+         * @param {string} message 
+         * @param {number} duration 
+         * @param {boolean} isError 
+         */
+        function showStatus(message, duration = 3000, isError = false) {
+            statusMessageElement.innerText = message;
+            statusMessageElement.style.backgroundColor = isError ? 'rgba(153, 0, 0, 0.8)' : 'rgba(20, 20, 20, 0.8)';
+            statusMessageElement.style.color = isError ? '#ffaaaa' : '#d4af37';
+            statusMessageElement.style.opacity = 1;
+            
+            clearTimeout(statusMessageElement.timer);
+            statusMessageElement.timer = setTimeout(() => {
+                statusMessageElement.style.opacity = 0;
+            }, duration);
+        }
+
+        // --- FIREBASE INITIALIZATION & DATA ---
+
+        async function initFirebase() {
+            if (!window.firebaseReady) {
+                showStatus("Error: Firebase SDK not loaded.", 5000, true);
+                return;
+            }
+            if (!firebaseConfig.apiKey) {
+                showStatus("Error: Firebase Config missing.", 5000, true);
+                return;
+            }
+
+            try {
+                const app = firebase.initializeApp(firebaseConfig);
+                db = firebase.getFirestore(app);
+                auth = firebase.getAuth(app);
+                
+                // 认证
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+                if (initialAuthToken) {
+                    await firebase.signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await firebase.signInAnonymously(auth);
+                }
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                
+                console.log(`Firebase initialized. User ID: ${userId}`);
+                await loadPhotosFromFirestore();
+
+            } catch(error) {
+                showStatus(`Firebase Init Failed: ${error.message}`, 8000, true);
+                console.error("Firebase Init Failed:", error);
+            }
+        }
+
+        /**
+         * 从 Firestore 加载照片并设置实时监听
+         */
+        async function loadPhotosFromFirestore() {
+            if (!db) return;
+
+            const publicPath = `artifacts/${appId}/public/data/photos`;
+            const photosColRef = firebase.collection(db, publicPath);
+            
+            firebase.onSnapshot(photosColRef, (snapshot) => {
+                let photoCount = 0;
+                snapshot.docChanges().forEach(change => {
+                    const data = change.doc.data();
+                    const photoId = change.doc.id;
+
+                    if (change.type === "added" && !STATE.loadedPhotoIds.has(photoId)) {
+                        try {
+                            // 确保 Base64 数据存在
+                            if (data.imageData) {
+                                // 创建 Texture
+                                new THREE.TextureLoader().load(data.imageData, (t) => {
+                                    t.colorSpace = THREE.SRGBColorSpace;
+                                    // 添加到场景，并使用存储的随机位置
+                                    addPhotoToScene(t, new THREE.Vector3(data.posTreeX, data.posTreeY, data.posTreeZ), photoId);
+                                    photoCount++;
+                                }, undefined, (error) => {
+                                    console.error("Texture loading error:", error);
+                                });
+                                STATE.loadedPhotoIds.add(photoId);
+                            }
+                        } catch (e) {
+                            console.error("Error processing photo data:", e);
+                        }
+                    }
+                    // TODO: Handle 'removed' or 'modified' changes if required
+                });
+                if(photoCount > 0) showStatus(`Loaded ${photoCount} new memories from the cloud.`, 3000);
+            }, (error) => {
+                showStatus(`Realtime Data Error: ${error.message}`, 5000, true);
+                console.error("Firestore Snapshot Error:", error);
+            });
+        }
+
+        /**
+         * 保存图片 Base64 到 Firestore
+         * @param {string} base64Data - 压缩后的 Base64 图片数据
+         */
+        async function savePhotoToFirestore(base64Data) {
+            if (!db) {
+                showStatus("Error: Database not ready.", 3000, true);
+                return;
+            }
+            
+            showStatus("Uploading memory...", 5000);
+
+            // 1. 创建一个临时的 Photo Particle 来获取初始位置
+            // Note: 我们只需要位置，不需要 Mesh
+            const tempMesh = new THREE.Mesh();
+            const tempParticle = new Particle(tempMesh, 'PHOTO', false, true); 
+
+            try {
+                const publicPath = `artifacts/${appId}/public/data/photos`;
+                await firebase.addDoc(firebase.collection(db, publicPath), {
+                    imageData: base64Data,
+                    timestamp: new Date(),
+                    // 存储粒子位置，以便所有用户看到照片都在同一位置
+                    posTreeX: tempParticle.posTree.x,
+                    posTreeY: tempParticle.posTree.y,
+                    posTreeZ: tempParticle.posTree.z,
+                    posScatterX: tempParticle.posScatter.x,
+                    posScatterY: tempParticle.posScatter.y,
+                    posScatterZ: tempParticle.posScatter.z,
+                    uploaderId: userId
+                });
+                showStatus("Memory uploaded successfully!", 3000);
+            } catch (e) {
+                showStatus(`Upload Failed: ${e.message}`, 5000, true);
+                console.error("Error adding document: ", e);
+            }
+        }
+
+
+        // --- THREE.JS SETUP ---
+
+        async function init() {
+            initThree();
+            setupEnvironment(); 
+            setupLights();
+            createTextures();
+            createChristmasTreeStructure();
+            createParticles();
+            createDefaultPhotos(); // 默认照片在 Firebase 加载前显示
+            setupPostProcessing();
+            setupEvents();
+            
+            await initFirebase(); // 等待 Firebase 初始化并加载共享照片
+            
+            // 隐藏加载器
+            const loader = document.getElementById('loader');
+            loader.style.opacity = 0;
+            setTimeout(() => loader.remove(), 800);
+
+            animate();
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(CONFIG.colors.bg);
+            scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.01); 
+
+            camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 2, CONFIG.camera.z); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ReinhardToneMapping; 
+            renderer.toneMappingExposure = 2.2; 
+            canvasContainer.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = true;
+            controls.maxDistance = 100;
+            controls.minDistance = 10;
+            controls.target.set(0, CONFIG.particles.treeHeight / 2 - 5, 0); 
+            controls.update();
+
+            mainGroup = new THREE.Group();
+            scene.add(mainGroup);
+        }
+
+        function setupEnvironment() {
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+        }
+
+        function setupLights() {
+            const ambient = new THREE.AmbientLight(0xffffff, 0.8); 
+            scene.add(ambient);
+
+            const innerLight = new THREE.PointLight(0xffaa00, 2, 20);
+            innerLight.position.set(0, 5, 0);
+            mainGroup.add(innerLight);
+
+            const spotGold = new THREE.SpotLight(0xffcc66, 1200);
+            spotGold.position.set(30, 40, 40);
+            spotGold.angle = 0.5;
+            spotGold.penumbra = 0.5;
+            scene.add(spotGold);
+
+            const spotBlue = new THREE.SpotLight(0x6688ff, 600);
+            spotBlue.position.set(-30, 20, -30);
+            scene.add(spotBlue);
+            
+            const fill = new THREE.DirectionalLight(0xffeebb, 0.8);
+            fill.position.set(0, 0, 50);
+            scene.add(fill);
+        }
+
+        function setupPostProcessing() {
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.7; 
+            bloomPass.strength = 0.45; 
+            bloomPass.radius = 0.4;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+        }
+
+        function createTextures() {
+            // Candy Cane Texture
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0,0,128,128);
+            ctx.fillStyle = '#880000'; 
+            ctx.beginPath();
+            for(let i=-128; i<256; i+=32) {
+                ctx.moveTo(i, 0); ctx.lineTo(i+32, 128); ctx.lineTo(i+16, 128); ctx.lineTo(i-16, 0);
+            }
+            ctx.fill();
+            caneTexture = new THREE.CanvasTexture(canvas);
+            caneTexture.wrapS = THREE.RepeatWrapping;
+            caneTexture.wrapT = THREE.RepeatWrapping;
+            caneTexture.repeat.set(3, 3);
+        }
+
+        /**
+         * 创建圣诞树的基础结构：仅有星星
+         */
+        function createChristmasTreeStructure() {
+            treeGroup = new THREE.Group();
+            const h = CONFIG.particles.treeHeight;
+
+            // 顶部星星
+            const starGeo = new THREE.OctahedronGeometry(1.2, 0);
+            const starMat = new THREE.MeshStandardMaterial({
+                color: 0xffdd88, emissive: 0xffaa00, emissiveIntensity: 1.0,
+                metalness: 1.0, roughness: 0
+            });
+            const star = new THREE.Mesh(starGeo, starMat);
+            star.position.set(0, CONFIG.particles.treeHeight/2 + 1.2, 0);
+            treeGroup.add(star);
+            particleSystem.push(new Particle(star, 'STAR', false)); 
+
+            mainGroup.add(treeGroup);
+        }
+
+
+        class Particle {
+            /**
+             * @param {THREE.Mesh} mesh - Three.js Mesh object 
+             * @param {string} type - Particle type
+             * @param {boolean} isDust - Is background dust
+             * @param {boolean} isTemp - Is this particle created only to get a random position (for Firestore)?
+             */
+            constructor(mesh, type, isDust = false, isTemp = false) {
+                this.mesh = mesh;
+                this.type = type;
+                this.isDust = isDust;
+                
+                this.posTree = new THREE.Vector3().copy(mesh.position);
+                this.posScatter = new THREE.Vector3();
+                this.baseScale = mesh.scale.x; 
+
+                const speedMult = (type === 'PHOTO') ? 0.3 : 2.0;
+                this.spinSpeed = new THREE.Vector3(
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult
+                );
+                
+                if (type !== 'DUST') {
+                    this.calculateTreePosition();
+                }
+                this.calculateScatterPosition();
+                
+                if (!isTemp && this.type !== 'STAR' && this.type !== 'PHOTO' && this.type !== 'DUST') {
+                    this.mesh.position.copy(this.posTree);
+                }
+            }
+
+            calculateTreePosition() {
+                const h = CONFIG.particles.treeHeight;
+                const rMax = CONFIG.particles.treeRadius;
+                const halfH = h / 2;
+                
+                if (this.type === 'TRUNK_PARTICLE') {
+                    // Trunk cylinder position
+                    const trunkHeight = h / 5;
+                    const trunkRadius = 1.2;
+                    const y = -halfH + (Math.random() * trunkHeight);
+                    const radius = trunkRadius * (0.5 + Math.random() * 0.5);
+                    const angle = Math.random() * Math.PI * 2;
+
+                    this.posTree.set(Math.cos(angle) * radius, y, Math.sin(angle) * radius);
+                } else if (this.type !== 'STAR') {
+                    // Foliage and Ornament spiral cone position
+                    let t = Math.random(); 
+                    t = Math.pow(t, 0.6); 
+                    const y = (t * h) - halfH;
+
+                    let radius = rMax * (1.0 - t); 
+                    if (radius < 0.5) radius = 0.5;
+                    
+                    let r = radius * (0.6 + Math.random() * 0.7); 
+                    
+                    const angle = t * 50 * Math.PI + Math.random() * Math.PI; 
+                    
+                    this.posTree.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
+                }
+                
+                // Note: STAR uses its mesh's initial position
+            }
+
+            calculateScatterPosition() {
+                let rScatter = this.isDust ? (12 + Math.random()*20) : (8 + Math.random()*12);
+                if (this.type === 'FOLIAGE_PARTICLE' || this.type === 'STAR' || this.type === 'TRUNK_PARTICLE') {
+                    rScatter = 15 + Math.random() * 25;
+                }
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                this.posScatter.set(
+                    rScatter * Math.sin(phi) * Math.cos(theta),
+                    rScatter * Math.sin(phi) * Math.sin(theta),
+                    rScatter * Math.cos(phi)
+                );
+            }
+
+            update(dt, mode, focusTargetMesh) {
+                let target = this.posTree;
+                
+                if (mode === 'SCATTER') {
+                    target = this.posScatter;
+                } else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) {
+                        const desiredWorldPos = new THREE.Vector3(0, 2, 25); 
+                        const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
+                        target = desiredWorldPos.applyMatrix4(invMatrix);
+                    } else {
+                        target = this.posScatter;
+                    }
+                }
+
+                // Movement Interpolation
+                const lerpSpeed = (mode === 'FOCUS' && this.mesh === focusTargetMesh) ? 5.0 : 2.0; 
+                this.mesh.position.lerp(target, lerpSpeed * dt);
+
+                // Rotation Logic
+                if (mode === 'SCATTER' || (mode === 'FOCUS' && this.mesh !== focusTargetMesh)) {
+                    this.mesh.rotation.x += this.spinSpeed.x * dt;
+                    this.mesh.rotation.y += this.spinSpeed.y * dt;
+                    this.mesh.rotation.z += this.spinSpeed.z * dt; 
+                } else if (mode === 'TREE') {
+                    this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, 2 * dt);
+                    this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, 2 * dt);
+                    this.mesh.rotation.y += 0.5 * dt; 
+                }
+                
+                if (mode === 'FOCUS' && this.mesh === focusTargetMesh) {
+                    this.mesh.lookAt(camera.position); 
+                }
+
+                // Scale Logic
+                let s = this.baseScale;
+                if (this.isDust) {
+                    s = this.baseScale * (0.8 + 0.4 * Math.sin(clock.elapsedTime * 4 + this.mesh.id));
+                    if (mode === 'TREE') s = 0;
+                } else if (mode === 'SCATTER' && this.type === 'PHOTO') {
+                    s = this.baseScale * 2.5;
+                } else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) s = 6.0;
+                    else s = this.baseScale * 0.8;
+                } else if ((this.type === 'FOLIAGE_PARTICLE' || this.type === 'TRUNK_PARTICLE') && mode === 'SCATTER') {
+                    s = this.baseScale * 1.5;
+                }
+                
+                this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);
+            }
+        }
+
+        // --- GEOMETRY CREATION ---
+        
+        function createParticles() {
+            // 1. Trunk Particles
+            const trunkGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+            const trunkMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.treeBrown, roughness: 0.8, metalness: 0.1
+            });
+            for (let i = 0; i < CONFIG.particles.trunkParticleCount; i++) {
+                const mesh = new THREE.Mesh(trunkGeo, trunkMat);
+                const s = 0.5 + Math.random() * 0.5;
+                mesh.scale.set(s, s, s);
+                const particle = new Particle(mesh, 'TRUNK_PARTICLE', false);
+                mainGroup.add(mesh);
+                particleSystem.push(particle);
+            }
+
+            // 2. Foliage Particles
+            const foliageGeo = new THREE.TetrahedronGeometry(0.1, 0);
+            const foliageMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.treeGreen, roughness: 0.9, metalness: 0.1,
+                emissive: CONFIG.colors.treeGreen, emissiveIntensity: 0.05 
+            });
+
+            for (let i = 0; i < CONFIG.particles.foliageCount; i++) {
+                const mesh = new THREE.Mesh(foliageGeo, foliageMat);
+                const s = 0.5 + Math.random() * 0.5;
+                mesh.scale.set(s, s, s);
+                const particle = new Particle(mesh, 'FOLIAGE_PARTICLE', false);
+                mainGroup.add(mesh);
+                particleSystem.push(particle);
+            }
+
+            // 3. Ornament Particles
+            const sphereGeo = new THREE.SphereGeometry(0.5, 32, 32); 
+            const boxGeo = new THREE.BoxGeometry(0.55, 0.55, 0.55); 
+            const curve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, -0.5, 0), new THREE.Vector3(0, 0.3, 0),
+                new THREE.Vector3(0.1, 0.5, 0), new THREE.Vector3(0.3, 0.4, 0)
+            ]);
+            const candyGeo = new THREE.TubeGeometry(curve, 16, 0.08, 8, false);
+
+            const goldMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.champagneGold, metalness: 1.0, roughness: 0.1, envMapIntensity: 2.0, emissive: 0x443300, emissiveIntensity: 0.3 });
+            const greenMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.deepGreen, metalness: 0.2, roughness: 0.8, emissive: 0x002200, emissiveIntensity: 0.2 });
+            const redMat = new THREE.MeshPhysicalMaterial({ color: CONFIG.colors.accentRed, metalness: 0.3, roughness: 0.2, clearcoat: 1.0, emissive: 0x330000 });
+            const candyMat = new THREE.MeshStandardMaterial({ map: caneTexture, roughness: 0.4 });
+            const glassMat = new THREE.MeshPhysicalMaterial({
+                color: 0x88ccff, metalness: 0.1, roughness: 0.1, transmission: 0.9, thickness: 0.5, envMapIntensity: 1.5
+            });
+
+            for (let i = 0; i < CONFIG.particles.ornamentCount; i++) {
+                const rand = Math.random();
+                let mesh, type;
+                
+                if (rand < 0.30) { mesh = new THREE.Mesh(boxGeo, greenMat); type = 'BOX'; } 
+                else if (rand < 0.55) { mesh = new THREE.Mesh(boxGeo, goldMat); type = 'GOLD_BOX'; } 
+                else if (rand < 0.75) { mesh = new THREE.Mesh(sphereGeo, goldMat); type = 'GOLD_SPHERE'; } 
+                else if (rand < 0.90) { mesh = new THREE.Mesh(sphereGeo, redMat); type = 'RED'; } 
+                else if (rand < 0.95) { mesh = new THREE.Mesh(candyGeo, candyMat); type = 'CANE'; }
+                else { mesh = new THREE.Mesh(sphereGeo, glassMat); type = 'GLASS_SPHERE'; }
+
+                const s = 0.4 + Math.random() * 0.5;
+                mesh.scale.set(s,s,s);
+                mesh.rotation.set(Math.random()*6, Math.random()*6, Math.random()*6);
+                
+                const particle = new Particle(mesh, type, false);
+                mainGroup.add(mesh); 
+                particleSystem.push(particle);
+            }
+
+            // 4. Dust Particles
+            const dustGeo = new THREE.TetrahedronGeometry(0.08, 0);
+            const dustMat = new THREE.MeshBasicMaterial({ color: 0xffeebb, transparent: true, opacity: 0.8 });
+            
+            for(let i=0; i<CONFIG.particles.dustCount; i++) {
+                 const mesh = new THREE.Mesh(dustGeo, dustMat);
+                 mesh.scale.setScalar(0.5 + Math.random());
+                 mainGroup.add(mesh);
+                 particleSystem.push(new Particle(mesh, 'DUST', true));
+            }
+
+            mainGroup.add(photoMeshGroup);
+        }
+
+        function createDefaultPhotos() {
+            // Default photo 1
+            const canvas = document.createElement('canvas');
+            canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#050505'; ctx.fillRect(0,0,512,512);
+            ctx.strokeStyle = '#eebb66'; ctx.lineWidth = 15; ctx.strokeRect(20,20,472,472);
+            ctx.font = '500 60px Cinzel'; ctx.fillStyle = '#eebb66';
+            ctx.textAlign = 'center'; 
+            ctx.fillText("JOYEUX", 256, 230);
+            ctx.fillText("NOEL", 256, 300);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            // Note: Default photos do not save to DB and use random positions
+            addPhotoToScene(tex, null, 'default1');
+            
+            // Default photo 2
+            const canvas2 = document.createElement('canvas');
+            canvas2.width = 512; canvas2.height = 512;
+            const ctx2 = canvas2.getContext('2d');
+            ctx2.fillStyle = '#050505'; ctx2.fillRect(0,0,512,512);
+            ctx2.strokeStyle = '#990000'; ctx2.lineWidth = 15; ctx2.strokeRect(20,20,472,472);
+            ctx2.font = '500 60px Cinzel'; ctx2.fillStyle = '#990000';
+            ctx2.textAlign = 'center'; 
+            ctx2.fillText("MERRY &", 256, 230);
+            ctx2.fillText("BRIGHT", 256, 300);
+            const tex2 = new THREE.CanvasTexture(canvas2);
+            tex2.colorSpace = THREE.SRGBColorSpace;
+            addPhotoToScene(tex2, null, 'default2');
+        }
+
+        /**
+         * Adds a photo mesh to the scene.
+         * @param {THREE.Texture} texture - The photo texture.
+         * @param {THREE.Vector3|null} posTree - Optional, predefined posTree (from Firestore).
+         * @param {string} photoId - Unique ID for the photo (Firestore doc ID or 'default').
+         */
+        function addPhotoToScene(texture, posTree = null, photoId) {
+            const frameGeo = new THREE.BoxGeometry(1.4, 1.4, 0.05);
+            const frameMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.champagneGold, metalness: 1.0, roughness: 0.1 });
+            const frame = new THREE.Mesh(frameGeo, frameMat);
+
+            const photoGeo = new THREE.PlaneGeometry(1.2, 1.2);
+            const photoMat = new THREE.MeshBasicMaterial({ map: texture });
+            const photo = new THREE.Mesh(photoGeo, photoMat);
+            photo.position.z = 0.04;
+            photo.userData.isPhoto = true; 
+
+            const group = new THREE.Group();
+            group.add(frame);
+            group.add(photo);
+            
+            const s = 0.8;
+            group.scale.set(s,s,s);
+            
+            const particle = new Particle(group, 'PHOTO', false);
+            
+            // Override posTree if provided (from Firestore)
+            if (posTree) {
+                particle.posTree.copy(posTree);
+                group.position.copy(posTree); // Set initial position immediately
+            }
+
+            group.userData.photoId = photoId; // Store unique ID for tracking
+
+            photoMeshGroup.add(group);
+            particleSystem.push(particle);
+        }
+        
+        /**
+         * Handles image file upload, resizing, and calls savePhotoToFirestore.
+         */
+        function handleImageUpload(e) {
+            const files = e.target.files;
+            if(!files.length) return;
+            
+            const file = files[0];
+            const reader = new FileReader();
+
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const MAX_WIDTH = 512; // Resize to max 512px side
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > MAX_WIDTH) {
+                            height *= MAX_WIDTH / width;
+                            width = MAX_WIDTH;
+                        }
+                    } else {
+                        if (height > MAX_WIDTH) {
+                            width *= MAX_WIDTH / height;
+                            height = MAX_WIDTH;
+                        }
+                    }
+                    
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    // Re-encode as JPEG with quality for compression
+                    const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8); 
+                    
+                    // Upload to Firestore
+                    savePhotoToFirestore(compressedBase64);
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+            e.target.value = ''; // Clear file input
+        }
+        
+        // --- INPUT HANDLING ---
+
+        function setMode(newMode) {
+            STATE.mode = newMode;
+            
+            if (newMode === 'FOCUS') {
+                controls.enabled = false;
+                hintTextElement.innerText = "点击任意位置返回 (Click anywhere to return)";
+            } else {
+                controls.enabled = true;
+                hintTextElement.innerText = "点击背景：解体/重组圣诞树。点击图片：聚焦查看。拖拽旋转。";
+            }
+            
+            if (newMode !== 'FOCUS') {
+                STATE.focusTarget = null;
+            }
+        }
+
+        function onPointerDown(event) {
+            STATE.isDragging = true;
+            STATE.prevMouseX = event.clientX || event.touches[0].clientX;
+            STATE.prevMouseY = event.clientY || event.touches[0].clientY;
+            STATE.pointerDownPos.set(STATE.prevMouseX, STATE.prevMouseY);
+            controls.enabled = false; 
+        }
+
+        function onPointerMove(event) {
+            if (STATE.isDragging) {
+                const clientX = event.clientX || event.touches[0].clientX;
+                const clientY = event.clientY || event.touches[0].clientY;
+
+                const deltaX = clientX - STATE.prevMouseX;
+                const deltaY = clientY - STATE.prevMouseY;
+
+                STATE.rotation.y += deltaX * 0.005; 
+                STATE.rotation.x += deltaY * 0.005;
+                STATE.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, STATE.rotation.x)); 
+
+                STATE.prevMouseX = clientX;
+                STATE.prevMouseY = clientY;
+            }
+        }
+
+        function onPointerUp(event) {
+            const currentX = event.clientX || (event.changedTouches?.[0]?.clientX ?? STATE.prevMouseX);
+            const currentY = event.clientY || (event.changedTouches?.[0]?.clientY ?? STATE.prevMouseY);
+            
+            const distanceMoved = STATE.pointerDownPos.distanceTo(new THREE.Vector2(currentX, currentY));
+            const isClick = distanceMoved < 5;
+
+            if (STATE.isDragging && isClick) {
+                handleSceneClick(event);
+            }
+
+            STATE.isDragging = false;
+            if (STATE.mode !== 'FOCUS') controls.enabled = true;
+        }
+
+
+        function handleSceneClick(event) {
+            if (event.target !== renderer.domElement) return;
+            
+            STATE.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            STATE.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            STATE.raycaster.setFromCamera(STATE.mouse, camera);
+
+            const intersects = STATE.raycaster.intersectObjects(photoMeshGroup.children, true);
+
+            if (intersects.length > 0) {
+                let hitObject = intersects[0].object;
+                while (hitObject && hitObject.parent !== photoMeshGroup) {
+                    hitObject = hitObject.parent;
+                }
+
+                if (hitObject) {
+                    if (STATE.mode === 'FOCUS' && STATE.focusTarget === hitObject) {
+                        setMode('TREE');
+                    } else {
+                        STATE.focusTarget = hitObject;
+                        setMode('FOCUS');
+                    }
+                }
+            } else {
+                if (STATE.mode === 'TREE') {
+                    setMode('SCATTER');
+                } else if (STATE.mode === 'SCATTER') {
+                    setMode('TREE');
+                } else if (STATE.mode === 'FOCUS') {
+                    setMode('TREE');
+                }
+            }
+        }
+
+        function setupEvents() {
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                composer.setSize(window.innerWidth, window.innerHeight);
+            });
+            document.getElementById('file-input').addEventListener('change', handleImageUpload);
+            
+            canvasContainer.addEventListener('pointerdown', onPointerDown);
+            canvasContainer.addEventListener('pointermove', onPointerMove);
+            canvasContainer.addEventListener('pointerup', onPointerUp);
+            canvasContainer.addEventListener('pointerleave', onPointerUp);
+
+            window.addEventListener('keydown', (e) => {
+                if (e.key.toLowerCase() === 'h') {
+                    const uiElements = [document.querySelector('.controls-wrapper'), document.querySelector('.upload-wrapper')];
+                    uiElements.forEach(el => el.classList.toggle('ui-hidden'));
+                } else if (e.key === 'Escape') {
+                    if (STATE.mode === 'FOCUS') {
+                        setMode('TREE');
+                    }
+                }
+            });
+            
+            document.getElementById('hide-ui-btn').addEventListener('click', () => {
+                 const uiElements = [document.querySelector('.controls-wrapper'), document.querySelector('.upload-wrapper')];
+                 uiElements.forEach(el => el.classList.toggle('ui-hidden'));
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta();
+
+            if (!STATE.isDragging) {
+                if(STATE.mode === 'TREE') {
+                    STATE.rotation.y += 0.3 * dt;
+                } else if (STATE.mode === 'SCATTER' || STATE.mode === 'FOCUS') {
+                    STATE.rotation.y += 0.1 * dt;
+                }
+            }
+            
+            mainGroup.rotation.y = STATE.rotation.y;
+            mainGroup.rotation.x = STATE.rotation.x;
+
+            controls.update();
+            particleSystem.forEach(p => p.update(dt, STATE.mode, STATE.focusTarget));
+            composer.render();
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
